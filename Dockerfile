@@ -1,9 +1,10 @@
-FROM node:20-alpine
+FROM node:21
+
+RUN apt-get update -y && apt-get install -y ffmpeg
 
 WORKDIR /app
 COPY . /app/
-
-RUN yarn install
-RUN yarn build
+RUN npm install
+RUN npm run build
 
 ENTRYPOINT [ "node", "build/index.js" ]

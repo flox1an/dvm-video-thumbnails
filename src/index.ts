@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import dayjs from "dayjs";
-import { NostrEvent, Subscription, Filter, finalizeEvent } from "nostr-tools";
-import { NOSTR_PRIVATE_KEY, NOSTR_RELAYS } from "./env.js";
-import { getInput, getInputTag, getOutputType, getRelays } from "./helpers/dvm.js";
+import { NostrEvent, Subscription, Filter, finalizeEvent, nip04 } from "nostr-tools";
+import { BLOSSOM_UPLOAD_SERVER, NOSTR_PRIVATE_KEY, NOSTR_RELAYS } from "./env.js";
+import { getInput, getInputParam, getInputParams, getInputTag, getOutputType, getRelays } from "./helpers/dvm.js";
 import { unique } from "./helpers/array.js";
 import { pool } from "./pool.js";
 import { logger } from "./debug.js";
@@ -14,19 +14,51 @@ import { rmSync } from "fs";
 type JobContext = {
   request: NostrEvent;
   url: string;
+  thumbnailCount: number;
+  imageFormat: "jpg" | "png";
+  uploadServer: string;
 };
 
 async function shouldAcceptJob(request: NostrEvent): Promise<JobContext> {
+  //const decryptedContent = await nip04.decrypt(NOSTR_PRIVATE_KEY, request.pubkey, request.content);
+  //encryptedTags = JSON.parse(decryptedContent);
+
   const input = getInput(request);
   const output = getOutputType(request);
-  // const lang = getInputParam(request, "language");
+
+  const authTokens = unique(getInputParams(request, "authToken"));
+  const thumbnailCount = parseInt(getInputParam(request, "thumbnailCount", "3"), 10);
+  const imageFormat = getInputParam(request, "imageFormat", "jpg");
+  const uploadServer = getInputParam(request, "uploadServer", BLOSSOM_UPLOAD_SERVER);
 
   // if (output !== "text/plain") throw new Error(`Unsupported output type ${output}`);
 
+  if (thumbnailCount < 1 || thumbnailCount > 10) {
+    throw new Error(`Thumbnail count has to be between 1 and 10`);
+  }
+
+  // uniq auth token either 0 or len>=thumbnailCount
+  if (authTokens.length > 0 && authTokens.length <= thumbnailCount) {
+    throw new Error(`Not enough auth tokens ${authTokens.length} for ${thumbnailCount} thumbnail uploads.`);
+  }
+
+  // TODO check that auth tokens are not expired
+
   // TODO add sanity checks for URL
+  if (
+    !uploadServer.match(
+      /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/,
+    )
+  ) {
+    throw new Error(`Upload server is not a valid url.`);
+  }
+
+  if (imageFormat != "jpg" && imageFormat != "png") {
+    throw new Error(`Unsupported image format ${imageFormat}`);
+  }
 
   if (input.type === "url") {
-    return { url: input.value, request };
+    return { url: input.value, request, thumbnailCount, imageFormat, uploadServer };
   } else throw new Error(`Unknown input type ${input.type}`);
 }
 
@@ -60,19 +92,19 @@ async function doWork(context: JobContext) {
   const startTime = dayjs().unix();
 
   logger(`creating thumb for URL ${context.url}`);
-  const server = "https://media-server.slidestr.net";  // TODO add env variable for this
 
   const resultTags = await retreiveMetaData(context.url);
 
-  const thumbnailContent = await extractThumbnails(context.url, 3, 'jpg'); // TODO add DVM param for these
+  const thumbnailContent = await extractThumbnails(context.url, context.thumbnailCount, context.imageFormat);
 
   for (const tp of thumbnailContent.thumbnailPaths) {
-    const blob = await uploadFile(tp, server);
-    logger(`Uplaoaded thumbnail file: ${blob.url}`);
+    const blob = await uploadFile(tp, context.uploadServer); // todo use user specfic auth Tokens
+    logger(`Uploaaded thumbnail file: ${blob.url}`);
     resultTags.push(["thumb", blob.url]);
     resultTags.push(["x", blob.sha256]);
   }
 
+  //nip04.encrypt(NOSTR_PRIVATE_KEY, p, JSON.stringify())
   const result = finalizeEvent(
     {
       kind: DVM_VIDEO_THUMB_RESULT_KIND,
@@ -89,7 +121,7 @@ async function doWork(context: JobContext) {
     NOSTR_PRIVATE_KEY,
   );
 
-  rmSync(thumbnailContent.tempDir, { recursive: true });  // TODO also remove this when an error occurs
+  rmSync(thumbnailContent.tempDir, { recursive: true }); // TODO also remove this when an error occurs
 
   const endTime = dayjs().unix();
 

@@ -24,8 +24,8 @@ export function getInputParams(e: Event, k: string) {
   return e.tags.filter((t) => t[0] === "param" && t[1] === k).map((t) => t[2]);
 }
 
-export function getInputParam(e: Event, k: string) {
-  const value = getInputParams(e, k)[0];
+export function getInputParam(e: Event, k: string, defaultValue?: string) {
+  const value = getInputParams(e, k)[0] || defaultValue;
   if (value === undefined) throw new Error(`Missing ${k} param`);
   return value;
 }
