@@ -1,14 +1,12 @@
-import { Signer } from "blossom-client-sdk";
-import { EventTemplate, finalizeEvent } from "nostr-tools";
-import { NOSTR_PRIVATE_KEY } from "../env.js";
-import dayjs from "dayjs";
-import { getFileSizeSync } from "./filesystem.js";
-import { createReadStream } from "fs";
-import axios from "axios";
-import debug from "debug";
-import { randomUUID } from "crypto";
+import { finalizeEvent } from 'nostr-tools';
+import dayjs from 'dayjs';
+import { createReadStream, statSync } from 'fs';
+import axios from 'axios';
+import debug from 'debug';
+import { NOSTR_PRIVATE_KEY } from '../env.js';
+import { BLOSSOM_AUTH_KIND } from '../const.js';
 
-const logger = debug("dvm:blossom");
+const logger = debug('dvm:blossom');
 
 type BlobDescriptor = {
   created: number;
@@ -18,36 +16,68 @@ type BlobDescriptor = {
   url: string;
 };
 
-const signer: Signer = async (event: EventTemplate) => {
-  return new Promise((resolve, reject) => {
-    try {
-      const verifiedEvent = finalizeEvent(event, NOSTR_PRIVATE_KEY);
-      resolve(verifiedEvent);
-    } catch (error) {
-      reject(error);
-    }
-  });
-};
+const tenMinutesFromNow = () => dayjs().unix() + 10 * 60;
 
-export async function createDvmBlossemAuthToken() {
-  const tenMinutes = () => dayjs().unix() + 10 * 60;
-  const authEvent = await signer({
+function createBlossemUploadAuthToken(size: number): string {
+  const authEvent = {
     created_at: dayjs().unix(),
-    kind: 24242,
-    content: "Upload thumbail",
+    kind: BLOSSOM_AUTH_KIND,
+    content: 'Upload thumbail',
     tags: [
-      ["t", "upload"],
-      ["name", randomUUID() ],  // make sure the auth events are unique
-      ["expiration", String(tenMinutes)],
+      ['t', 'upload'],
+      ['size', `${size}`],
+      ['name', `thumb_${Math.random().toString(36).substring(2)}.jpg`], // make sure the auth events are unique
+      ['expiration', `${tenMinutesFromNow()}`],
     ],
-  });
-
-  return btoa(JSON.stringify(authEvent));
+  };
+  const signedEvent = finalizeEvent(authEvent, NOSTR_PRIVATE_KEY);
+  return btoa(JSON.stringify(signedEvent));
 }
 
-export async function uploadFile(filePath: string, server: string, authToken?: string): Promise<BlobDescriptor> {
+function createBlossemListAuthToken(): string {
+  const authEvent = {
+    created_at: dayjs().unix(),
+    kind: BLOSSOM_AUTH_KIND,
+    content: 'List Blobs',
+    tags: [
+      ['t', 'list'],
+      ['expiration', `${tenMinutesFromNow()}`],
+    ],
+  };
+  const signedEvent = finalizeEvent(authEvent, NOSTR_PRIVATE_KEY);
+  return btoa(JSON.stringify(signedEvent));
+}
+
+
+function createBlossemDeleteAuthToken(blobHash:string): string {
+  const authEvent = {
+    created_at: dayjs().unix(),
+    kind: BLOSSOM_AUTH_KIND,
+    content: 'Delete Blob',
+    tags: [
+      ['t', 'delete'],
+      ['x', blobHash],
+      ['expiration', `${tenMinutesFromNow()}`],
+    ],
+  };
+  const signedEvent = finalizeEvent(authEvent, NOSTR_PRIVATE_KEY);
+  return btoa(JSON.stringify(signedEvent));
+}
+
+/*
+export function decodeBlossemAuthToken(encodedAuthToken: string) {
   try {
-    const blossomAuthToken = authToken || await createDvmBlossemAuthToken();
+    return JSON.parse(atob(encodedAuthToken).toString()) as SignedEvent;
+  } catch (e: any) {
+    logger("Failed to extract auth token ", encodedAuthToken);
+  }
+}
+*/
+
+export async function uploadFile(filePath: string, server: string, outputMimeType = 'image/jpeg'): Promise<BlobDescriptor> {
+  try {
+    const stat = statSync(filePath);
+    const blossomAuthToken = createBlossemUploadAuthToken(stat.size);
 
     // Create a read stream for the thumbnail file
     const thumbnailStream = createReadStream(filePath);
@@ -55,14 +85,43 @@ export async function uploadFile(filePath: string, server: string, authToken?: s
     // Upload thumbnail stream using axios
     const blob = await axios.put<BlobDescriptor>(`${server}/upload`, thumbnailStream, {
       headers: {
-        "Content-Type": "image/jpeg", // Adjust content type as needed    <--- TODO adjust for png
-        "Authorization": "Nostr " + blossomAuthToken,
+        'Content-Type': outputMimeType,
+        Authorization: 'Nostr ' + blossomAuthToken,
       },
     });
 
     logger(`File ${filePath} uploaded successfully.`);
     return blob.data;
   } catch (error: any) {
-    throw new Error(`Failed to upload thumbnail ${filePath}: ${error.message}`);
+    throw new Error(
+      `Failed to upload thumbnail ${filePath}: ${error.message} (${JSON.stringify(error.response?.data)})`
+    );
+  }
+}
+
+export async function listBlobs(server: string, pubkey: string): Promise<BlobDescriptor[]> {
+  const authToken = createBlossemListAuthToken();
+  const blobResult = await axios.get<BlobDescriptor[]>(`${server}/list/${pubkey}`, {
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      Authorization: 'Nostr ' + authToken,
+    },
+  });
+  if (blobResult.status !== 200) {
+    logger(`Failed to list blobs: ${blobResult.status} ${blobResult.statusText}`);
+  }
+  return blobResult.data;
+}
+
+
+export async function deleteBlob(server: string, blobHash: string): Promise<void> {
+  const authToken = createBlossemDeleteAuthToken(blobHash);
+  const blobResult = await axios.delete(`${server}/${blobHash}`, {
+    headers: {
+      Authorization: 'Nostr ' + authToken,
+    },
+  });
+  if (blobResult.status !== 200) {
+    logger(`Failed to delete blobs: ${blobResult.status} ${blobResult.statusText}`);
   }
 }
