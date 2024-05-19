@@ -262,10 +262,11 @@ async function cleanupBlobs() {
   }
 };
 
-await ensureSubscriptions();
-setInterval(ensureSubscriptions, 30_000);
+await cleanupBlobs();
+setInterval(cleanupBlobs, 60 * 60 * 1000); // Clean up blobs every hour
 
-cleanupBlobs();
+await ensureSubscriptions();
+setInterval(ensureSubscriptions, 30_000); // Ensure connections every 30s
 
 async function shutdown() {
   process.exit();

@@ -5,6 +5,8 @@ import axios from 'axios';
 import debug from 'debug';
 import { NOSTR_PRIVATE_KEY } from '../env.js';
 import { BLOSSOM_AUTH_KIND } from '../const.js';
+import { readFile } from 'fs/promises';
+import { createHash } from 'crypto';
 
 const logger = debug('dvm:blossom');
 
@@ -18,7 +20,7 @@ type BlobDescriptor = {
 
 const tenMinutesFromNow = () => dayjs().unix() + 10 * 60;
 
-function createBlossemUploadAuthToken(size: number): string {
+function createBlossemUploadAuthToken(size: number, blobHash: string): string {
   const authEvent = {
     created_at: dayjs().unix(),
     kind: BLOSSOM_AUTH_KIND,
@@ -26,11 +28,13 @@ function createBlossemUploadAuthToken(size: number): string {
     tags: [
       ['t', 'upload'],
       ['size', `${size}`],
+      ['x', blobHash],
       ['name', `thumb_${Math.random().toString(36).substring(2)}.jpg`], // make sure the auth events are unique
       ['expiration', `${tenMinutesFromNow()}`],
     ],
   };
   const signedEvent = finalizeEvent(authEvent, NOSTR_PRIVATE_KEY);
+  logger(JSON.stringify(signedEvent));
   return btoa(JSON.stringify(signedEvent));
 }
 
@@ -48,8 +52,7 @@ function createBlossemListAuthToken(): string {
   return btoa(JSON.stringify(signedEvent));
 }
 
-
-function createBlossemDeleteAuthToken(blobHash:string): string {
+function createBlossemDeleteAuthToken(blobHash: string): string {
   const authEvent = {
     created_at: dayjs().unix(),
     kind: BLOSSOM_AUTH_KIND,
@@ -73,11 +76,28 @@ export function decodeBlossemAuthToken(encodedAuthToken: string) {
   }
 }
 */
+async function calculateSHA256(filePath: string): Promise<string> {
+  try {
+      const fileBuffer = await readFile(filePath);
+      const hash = createHash('sha256');
+      hash.update(fileBuffer);
+      return hash.digest('hex');
+  } catch (error: any) {
+      throw new Error(`Fehler beim Berechnen des SHA-256-Hash: ${error.message}`);
+  }
+}
 
-export async function uploadFile(filePath: string, server: string, outputMimeType = 'image/jpeg'): Promise<BlobDescriptor> {
+export async function uploadFile(
+  filePath: string,
+  server: string,
+  outputMimeType = 'image/jpeg'
+): Promise<BlobDescriptor> {
   try {
     const stat = statSync(filePath);
-    const blossomAuthToken = createBlossemUploadAuthToken(stat.size);
+
+    const hash = await calculateSHA256(filePath);
+
+    const blossomAuthToken = createBlossemUploadAuthToken(stat.size, hash);
 
     // Create a read stream for the thumbnail file
     const thumbnailStream = createReadStream(filePath);
@@ -112,7 +132,6 @@ export async function listBlobs(server: string, pubkey: string): Promise<BlobDes
   }
   return blobResult.data;
 }
-
 
 export async function deleteBlob(server: string, blobHash: string): Promise<void> {
   const authToken = createBlossemDeleteAuthToken(blobHash);
