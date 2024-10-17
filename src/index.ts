@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import dayjs from 'dayjs';
-import { NostrEvent, Subscription, Filter, finalizeEvent, nip04, EventTemplate, getPublicKey } from 'nostr-tools';
+import { NostrEvent, Filter, finalizeEvent, nip04, EventTemplate, getPublicKey } from 'nostr-tools';
 import { BLOSSOM_BLOB_EXPIRATION_DAYS, BLOSSOM_UPLOAD_SERVER, NOSTR_PRIVATE_KEY, NOSTR_RELAYS } from './env.js';
 import { getInput, getInputParam, getInputParams, getInputTag, getOutputType, getRelays } from './helpers/dvm.js';
 import { unique } from './helpers/array.js';
@@ -10,6 +10,7 @@ import { DVM_VIDEO_THUMB_REQUEST_KIND, DVM_VIDEO_THUMB_RESULT_KIND } from './con
 import { extractThumbnails, extractVideoMetadata } from './helpers/ffmpeg.js';
 import { deleteBlob, listBlobs, uploadFile } from './helpers/blossom.js';
 import { rmSync } from 'fs';
+import { Subscription } from 'nostr-tools/abstract-relay';
 
 type JobContext = {
   request: NostrEvent;
@@ -149,8 +150,10 @@ async function doWork(context: JobContext) {
   // TODO add DVM error events for exeptions
 
   logger(`${`Finished work for ${context.request.id} in ` + (endTime - startTime)} seconds`);
+  const relays = unique([...getRelays(context.request), ...NOSTR_RELAYS]).filter(r => !!r);
+  logger('publishing to relays: ', relays);
   await Promise.all(
-    pool.publish(unique([...getRelays(context.request), ...NOSTR_RELAYS]), result).map(p => p.catch(e => {}))
+    pool.publish(relays, result).map(p => p.catch(e => {}))
   );
 }
 
